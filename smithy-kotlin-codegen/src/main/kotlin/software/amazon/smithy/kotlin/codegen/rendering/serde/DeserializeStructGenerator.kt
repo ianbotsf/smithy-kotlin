@@ -123,7 +123,11 @@ open class DeserializeStructGenerator(
         val descriptorName = memberShape.descriptorName()
         val deserialize = deserializerForShape(memberShape)
 
-        writer.write("$descriptorName.index -> builder.$memberName = $deserialize")
+        if (ctx.settings.codegen.dataClasses) {
+            writer.write("$descriptorName.index -> $memberName = $deserialize")
+        } else {
+            writer.write("$descriptorName.index -> builder.$memberName = $deserialize")
+        }
     }
 
     /**
@@ -139,7 +143,7 @@ open class DeserializeStructGenerator(
         val memberName = ctx.symbolProvider.toMemberName(memberShape)
         val descriptorName = memberShape.descriptorName()
         val mutableCollectionType = targetShape.mutableCollectionType()
-        val valueCollector = deserializationResultName("builder.$memberName")
+        val valueCollector = deserializationResultName(if (ctx.settings.codegen.dataClasses) memberName else "builder.$memberName")
         val mutableCollectionName = nestingLevel.variableNameFor(NestedIdentifierType.MAP)
         val collectionReturnExpression = collectionReturnExpression(memberShape, mutableCollectionName)
 
@@ -345,7 +349,7 @@ open class DeserializeStructGenerator(
         val memberName = ctx.symbolProvider.toMemberName(memberShape)
         val descriptorName = memberShape.descriptorName()
         val mutableCollectionType = targetShape.mutableCollectionType()
-        val valueCollector = deserializationResultName("builder.$memberName")
+        val valueCollector = deserializationResultName(if (ctx.settings.codegen.dataClasses) memberName else "builder.$memberName")
         val mutableCollectionName = nestingLevel.variableNameFor(NestedIdentifierType.COLLECTION)
         val collectionReturnExpression = collectionReturnExpression(memberShape, mutableCollectionName)
 

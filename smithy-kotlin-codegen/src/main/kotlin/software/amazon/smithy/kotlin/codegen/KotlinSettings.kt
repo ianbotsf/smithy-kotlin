@@ -25,6 +25,7 @@ private const val PACKAGE_NAME = "name"
 private const val PACKAGE_VERSION = "version"
 private const val PACKAGE_DESCRIPTION = "description"
 private const val BUILD_SETTINGS = "build"
+private const val CODEGEN_SETTINGS = "codegen"
 // Optional specification of sdkId for models that provide them, otherwise Service's shape id name is used
 private const val SDK_ID = "sdkId"
 
@@ -35,7 +36,8 @@ data class KotlinSettings(
     val service: ShapeId,
     val pkg: PackageSettings,
     val sdkId: String,
-    val build: BuildSettings = BuildSettings.Default
+    val build: BuildSettings = BuildSettings.Default,
+    val codegen: CodegenSettings = CodegenSettings.Default,
 ) {
 
     /**
@@ -90,11 +92,13 @@ data class KotlinSettings(
             // Load the sdk id from configurations that define it, fall back to service name for those that don't.
             val sdkId = config.getStringMemberOrDefault(SDK_ID, serviceId.name)
             val build = config.getObjectMember(BUILD_SETTINGS)
+            val codegen = config.getObjectMember(CODEGEN_SETTINGS)
             return KotlinSettings(
                 serviceId,
                 PackageSettings(packageName, version, desc),
                 sdkId,
-                BuildSettings.fromNode(build)
+                BuildSettings.fromNode(build),
+                CodegenSettings.fromNode(codegen),
             )
         }
 
@@ -193,6 +197,28 @@ data class BuildSettings(
          * Default build settings
          */
         val Default: BuildSettings = BuildSettings()
+    }
+}
+
+data class CodegenSettings(
+    val dataClasses: Boolean = false,
+    val boxRequiredMembers: Boolean = true,
+) {
+    companion object {
+        private const val DATA_CLASSES = "dataClasses"
+        private const val BOX_REQUIRED_MEMBERS = "boxRequiredMembers"
+
+        fun fromNode(node: Optional<ObjectNode>): CodegenSettings = node.map {
+            CodegenSettings(
+                dataClasses = node.get().getBooleanMemberOrDefault(DATA_CLASSES, false),
+                boxRequiredMembers = node.get().getBooleanMemberOrDefault(BOX_REQUIRED_MEMBERS, true),
+            )
+        }.orElse(Default)
+
+        /**
+         * Default build settings
+         */
+        val Default: CodegenSettings = CodegenSettings()
     }
 }
 

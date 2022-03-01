@@ -9,6 +9,7 @@ import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.kotlin.codegen.core.KotlinWriter
 import software.amazon.smithy.kotlin.codegen.core.RuntimeTypes
 import software.amazon.smithy.kotlin.codegen.core.withBlock
+import software.amazon.smithy.kotlin.codegen.model.isBoxed
 import software.amazon.smithy.kotlin.codegen.model.knowledge.SerdeIndex
 import software.amazon.smithy.kotlin.codegen.rendering.protocol.ProtocolGenerator
 import software.amazon.smithy.kotlin.codegen.rendering.protocol.toRenderingContext
@@ -31,11 +32,43 @@ open class JsonParserGenerator(
         return op.bodyDeserializer(ctx.settings) { writer ->
             addNestedDocumentDeserializers(ctx, op, writer)
             val fnName = op.bodyDeserializerName()
-            writer.openBlock("private fun #L(builder: #T.Builder, payload: ByteArray) {", fnName, outputSymbol)
-                .call {
-                    renderDeserializeOperationBody(ctx, op, members, writer)
+            if (ctx.settings.codegen.dataClasses) {
+                writer.withBlock("private fun #L(payload: ByteArray): #T {", "}", fnName, outputSymbol) {
+                    val memberNameSymbolIndex = members.associateWith {
+                        ctx.symbolProvider.toMemberName(it) to ctx.symbolProvider.toSymbol(it)
+                    }
+                    val (nullableMembers, nonNullMembers) = members
+                        .partition { memberNameSymbolIndex[it]!!.second.isBoxed }
+
+                    fun renderMemberVar(m: MemberShape) {
+                        val (name, memberSymbol) = memberNameSymbolIndex[m]!!
+                        // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
+                        writer.write("var #L: #E", name, memberSymbol)
+                    }
+
+                    fun renderMemberPassing(m: MemberShape, rightSideAssertion: String = "") {
+                        val (name, _) = memberNameSymbolIndex[m]!!
+                        writer.write("#1L = #1L$rightSideAssertion,", name)
+                    }
+
+                    nonNullMembers.forEach(::renderMemberVar)
+                    nullableMembers.forEach(::renderMemberVar)
+
+                    write("val deserializer = #T(payload)", RuntimeTypes.Serde.SerdeJson.JsonDeserializer)
+                    renderDeserializerBody(ctx, op, members, writer)
+
+                    writer.withBlock("return #T(", ")", outputSymbol) {
+                        nonNullMembers.forEach { renderMemberPassing(it, "!!") }
+                        nullableMembers.forEach { renderMemberPassing(it) }
+                    }
                 }
-                .closeBlock("}")
+            } else {
+                writer.openBlock("private fun #L(builder: #T.Builder, payload: ByteArray) {", fnName, outputSymbol)
+                    .call {
+                        renderDeserializeOperationBody(ctx, op, members, writer)
+                    }
+                    .closeBlock("}")
+            }
         }
     }
 
@@ -77,9 +110,42 @@ open class JsonParserGenerator(
                         renderDeserializerBody(ctx, shape, shape.members().toList(), writer)
                         writer.write("return value ?: throw #T(#S)", RuntimeTypes.Serde.DeserializationException, "Deserialized union value unexpectedly null: ${symbol.name}")
                     } else {
-                        writer.write("val builder = #T.Builder()", symbol)
-                        renderDeserializerBody(ctx, shape, shape.members().toList(), writer)
-                        writer.write("return builder.build()")
+                        if (ctx.settings.codegen.dataClasses) {
+                            val structureShape = shape as StructureShape
+                            val memberShapes = structureShape.allMembers.values
+                            val memberNameSymbolIndex = memberShapes.associateWith {
+                                ctx.symbolProvider.toMemberName(it) to ctx.symbolProvider.toSymbol(it)
+                            }
+                            val (nullableMembers, nonNullMembers) = structureShape
+                                .allMembers
+                                .values
+                                .partition { memberNameSymbolIndex[it]!!.second.isBoxed }
+
+                            fun renderMemberVar(m: MemberShape) {
+                                val (name, memberSymbol) = memberNameSymbolIndex[m]!!
+                                // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
+                                writer.write("var #L: #E", name, memberSymbol)
+                            }
+
+                            fun renderMemberPassing(m: MemberShape, rightSideAssertion: String = "") {
+                                val (name, _) = memberNameSymbolIndex[m]!!
+                                writer.write("#1L = #1L$rightSideAssertion,", name)
+                            }
+
+                            nonNullMembers.forEach(::renderMemberVar)
+                            nullableMembers.forEach(::renderMemberVar)
+
+                            renderDeserializerBody(ctx, shape, shape.members().toList(), writer)
+
+                            writer.withBlock("return #T(", ")", symbol) {
+                                nonNullMembers.forEach { renderMemberPassing(it, "!!") }
+                                nullableMembers.forEach { renderMemberPassing(it) }
+                            }
+                        } else {
+                            writer.write("val builder = #T.Builder()", symbol)
+                            renderDeserializerBody(ctx, shape, shape.members().toList(), writer)
+                            writer.write("return builder.build()")
+                        }
                     }
                 }
                 .closeBlock("}")
@@ -91,12 +157,46 @@ open class JsonParserGenerator(
         return symbol.errorDeserializer(ctx.settings) { writer ->
             addNestedDocumentDeserializers(ctx, errorShape, writer)
             val fnName = symbol.errorDeserializerName()
-            writer.openBlock("private fun #L(builder: #T.Builder, payload: ByteArray) {", fnName, symbol)
-                .call {
-                    writer.write("val deserializer = #T(payload)", RuntimeTypes.Serde.SerdeJson.JsonDeserializer)
+
+            if (ctx.settings.codegen.dataClasses) {
+                writer.withBlock("private fun #L(payload: ByteArray): #T {", "}", fnName, symbol) {
+                    val memberShapes = errorShape.allMembers.values
+                    val memberNameSymbolIndex = memberShapes.associateWith {
+                        ctx.symbolProvider.toMemberName(it) to ctx.symbolProvider.toSymbol(it)
+                    }
+                    val (nullableMembers, nonNullMembers) = memberShapes
+                        .partition { memberNameSymbolIndex[it]!!.second.isBoxed }
+
+                    fun renderMemberVar(m: MemberShape) {
+                        val (name, memberSymbol) = memberNameSymbolIndex[m]!!
+                        // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
+                        writer.write("var #L: #E", name, memberSymbol)
+                    }
+
+                    fun renderMemberPassing(m: MemberShape, rightSideAssertion: String = "") {
+                        val (name, _) = memberNameSymbolIndex[m]!!
+                        writer.write("#1L = #1L$rightSideAssertion,", name)
+                    }
+
+                    nonNullMembers.forEach(::renderMemberVar)
+                    nullableMembers.forEach(::renderMemberVar)
+
+                    write("val deserializer = #T(payload)", RuntimeTypes.Serde.SerdeJson.JsonDeserializer)
                     renderDeserializerBody(ctx, errorShape, members, writer)
+
+                    writer.withBlock("return #T(", ")", symbol) {
+                        nonNullMembers.forEach { renderMemberPassing(it, "!!") }
+                        nullableMembers.forEach { renderMemberPassing(it) }
+                    }
                 }
-                .closeBlock("}")
+            } else {
+                writer.openBlock("private fun #L(builder: #T.Builder, payload: ByteArray) {", fnName, symbol)
+                    .call {
+                        writer.write("val deserializer = #T(payload)", RuntimeTypes.Serde.SerdeJson.JsonDeserializer)
+                        renderDeserializerBody(ctx, errorShape, members, writer)
+                    }
+                    .closeBlock("}")
+            }
         }
     }
 

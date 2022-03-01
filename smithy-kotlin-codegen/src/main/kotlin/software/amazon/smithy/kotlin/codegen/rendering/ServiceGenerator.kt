@@ -8,11 +8,14 @@ import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.kotlin.codegen.core.*
 import software.amazon.smithy.kotlin.codegen.integration.SectionId
 import software.amazon.smithy.kotlin.codegen.model.hasStreamingMember
+import software.amazon.smithy.kotlin.codegen.model.isBoxed
 import software.amazon.smithy.kotlin.codegen.model.operationSignature
 import software.amazon.smithy.model.knowledge.OperationIndex
 import software.amazon.smithy.model.knowledge.TopDownIndex
+import software.amazon.smithy.model.shapes.MemberShape
 import software.amazon.smithy.model.shapes.OperationShape
 import software.amazon.smithy.model.shapes.ServiceShape
+import java.lang.reflect.Member
 
 // FIXME - rename file and class to ServiceClientGenerator
 
@@ -167,9 +170,40 @@ class ServiceGenerator(private val ctx: RenderingContext<ServiceShape>) {
                 writer.write("")
                 writer.renderDocumentation(op)
                 writer.renderAnnotations(op)
-                val signature = "suspend fun $operationName(block: $input.Builder.() -> Unit)"
-                val impl = "$operationName($input.Builder().apply(block).build())"
-                writer.write("$signature = $impl")
+
+                if (ctx.settings.codegen.dataClasses) {
+                    val memberShapes = inputShape.allMembers.values
+                    val memberNameSymbolIndex = memberShapes.associateWith {
+                        ctx.symbolProvider.toMemberName(it) to ctx.symbolProvider.toSymbol(it)
+                    }
+                    val (nullableMembers, nonNullMembers) = inputShape
+                        .allMembers
+                        .values
+                        .partition { memberNameSymbolIndex[it]!!.second.isBoxed }
+
+                    fun renderMember(m: MemberShape, defaultValueString: String = "") {
+                        val (name, symbol) = memberNameSymbolIndex[m]!!
+                        // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
+                        writer.write("#L: #F$defaultValueString,", name, symbol)
+                    }
+
+                    fun renderMemberPassing(m: MemberShape) {
+                        val (name, _) = memberNameSymbolIndex[m]!!
+                        writer.write("#1L = #1L,", name)
+                    }
+
+                    writer.openBlock("suspend fun #L(", operationName)
+                    nonNullMembers.forEach { renderMember(it) }
+                    nullableMembers.forEach { renderMember(it, " = null") }
+                    writer.closeAndOpenBlock(") = #L(#L(", operationName, input)
+                    nonNullMembers.forEach(::renderMemberPassing)
+                    nullableMembers.forEach(::renderMemberPassing)
+                    writer.closeBlock("))")
+                } else {
+                    val signature = "suspend fun $operationName(block: $input.Builder.() -> Unit)"
+                    val impl = "$operationName($input.Builder().apply(block).build())"
+                    writer.write("$signature = $impl")
+                }
             }
         }
     }

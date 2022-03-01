@@ -8,26 +8,18 @@ import software.amazon.smithy.codegen.core.CodegenException
 import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.codegen.core.SymbolReference
 import software.amazon.smithy.kotlin.codegen.KotlinSettings
-import software.amazon.smithy.kotlin.codegen.core.CodegenContext
-import software.amazon.smithy.kotlin.codegen.core.ExternalTypes
-import software.amazon.smithy.kotlin.codegen.core.KotlinDelegator
-import software.amazon.smithy.kotlin.codegen.core.KotlinWriter
-import software.amazon.smithy.kotlin.codegen.core.defaultName
-import software.amazon.smithy.kotlin.codegen.core.withBlock
+import software.amazon.smithy.kotlin.codegen.core.*
 import software.amazon.smithy.kotlin.codegen.integration.KotlinIntegration
 import software.amazon.smithy.kotlin.codegen.lang.KotlinTypes
 import software.amazon.smithy.kotlin.codegen.model.SymbolProperty
 import software.amazon.smithy.kotlin.codegen.model.expectShape
 import software.amazon.smithy.kotlin.codegen.model.hasTrait
+import software.amazon.smithy.kotlin.codegen.model.isBoxed
 import software.amazon.smithy.kotlin.codegen.utils.getOrNull
 import software.amazon.smithy.model.Model
 import software.amazon.smithy.model.knowledge.PaginatedIndex
 import software.amazon.smithy.model.knowledge.PaginationInfo
-import software.amazon.smithy.model.shapes.CollectionShape
-import software.amazon.smithy.model.shapes.MapShape
-import software.amazon.smithy.model.shapes.OperationShape
-import software.amazon.smithy.model.shapes.ServiceShape
-import software.amazon.smithy.model.shapes.Shape
+import software.amazon.smithy.model.shapes.*
 import software.amazon.smithy.model.traits.PaginatedTrait
 
 /**
@@ -74,6 +66,7 @@ class PaginatorGenerator : KotlinIntegration {
 
         renderResponsePaginator(
             writer,
+            ctx,
             serviceSymbol,
             paginatedOperation,
             inputSymbol,
@@ -97,6 +90,7 @@ class PaginatorGenerator : KotlinIntegration {
     // Generate the paginator that iterates over responses
     private fun renderResponsePaginator(
         writer: KotlinWriter,
+        ctx: CodegenContext,
         serviceSymbol: Symbol,
         operationShape: OperationShape,
         inputSymbol: Symbol,
@@ -144,8 +138,14 @@ class PaginatorGenerator : KotlinIntegration {
                     write("var isFirstPage: Boolean = true")
                     write("")
                     withBlock("while (isFirstPage || (cursor?.isNotEmpty() == true)) {", "}") {
-                        withBlock("val req = initialRequest.copy {", "}") {
-                            write("this.$markerLiteral = cursor")
+                        if (ctx.settings.codegen.dataClasses) {
+                            withBlock("val req = initialRequest.copy (", ")") {
+                                write("$markerLiteral = cursor")
+                            }
+                        } else {
+                            withBlock("val req = initialRequest.copy {", "}") {
+                                write("this.$markerLiteral = cursor")
+                            }
                         }
                         write(
                             "val result = this@#1LPaginated.#1L(req)",
@@ -159,15 +159,50 @@ class PaginatorGenerator : KotlinIntegration {
             }
 
         writer.write("")
-        writer
-            .dokka(
-                """
+
+        writer.dokka(
+            """
                     $docBody
                     @param block A builder block used for DSL-style invocation of the operation
                     $docReturn
                 """.trimIndent()
-            )
-            .withBlock(
+        )
+
+        if (ctx.settings.codegen.dataClasses) {
+            // FIXME This is necessary because #F doesn't actually fully-qualify type parameters e.g.,
+            // Map<String, Condition> vs kotlin.collections.Map<kotlin.String, aws.sdk.kotlin.services.dynamodb.model.Condition>
+            writer.addImport(inputSymbol.namespace, "*")
+
+            val inputShape = paginationInfo.input
+            val memberShapes = inputShape.allMembers.values
+            val memberNameSymbolIndex = memberShapes.associateWith {
+                ctx.symbolProvider.toMemberName(it) to ctx.symbolProvider.toSymbol(it)
+            }
+            val (nullableMembers, nonNullMembers) = inputShape
+                .allMembers
+                .values
+                .partition { memberNameSymbolIndex[it]!!.second.isBoxed }
+
+            fun renderMember(m: MemberShape, defaultValueString: String = "") {
+                val (name, symbol) = memberNameSymbolIndex[m]!!
+                // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
+                writer.write("#L: #F$defaultValueString,", name, symbol)
+            }
+
+            fun renderMemberPassing(m: MemberShape) {
+                val (name, _) = memberNameSymbolIndex[m]!!
+                writer.write("#1L = #1L,", name)
+            }
+
+            writer.openBlock("suspend fun #T.#LPaginated(", serviceSymbol, operationShape.defaultName())
+            nonNullMembers.forEach { renderMember(it) }
+            nullableMembers.forEach { renderMember(it, " = null") }
+            writer.closeAndOpenBlock(") = #LPaginated(#T(", operationShape.defaultName(), inputSymbol)
+            nonNullMembers.forEach(::renderMemberPassing)
+            nullableMembers.forEach(::renderMemberPassing)
+            writer.closeBlock("))")
+        } else {
+            writer.withBlock(
                 "fun #T.#LPaginated(block: #T.Builder.() -> #T): #T<#T> =",
                 "",
                 serviceSymbol,
@@ -179,6 +214,7 @@ class PaginatorGenerator : KotlinIntegration {
             ) {
                 write("#LPaginated(#T.Builder().apply(block).build())", operationShape.defaultName(), inputSymbol)
             }
+        }
     }
 
     // Generate a paginator that iterates over the model-specified item

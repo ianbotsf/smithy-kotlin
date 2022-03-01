@@ -46,39 +46,64 @@ class StructureGenerator(
             Pair(symbolProvider.toMemberName(member), symbolProvider.toSymbol(member))
         }
 
+    private val nullableMembers = shape
+        .allMembers
+        .values
+        .filter { memberNameSymbolIndex[it]!!.second.isBoxed }
+
+    private val nonNullMembers = shape
+        .allMembers
+        .values
+        .filterNot { memberNameSymbolIndex[it]!!.second.isBoxed }
+
     /**
      * Renders a normal (non-error) Smithy structure to a Kotlin class
      */
     private fun renderStructure() {
-        writer.openBlock("class #T private constructor(builder: Builder) {", symbol)
-            .call { renderImmutableProperties() }
-            .write("")
-            .call { renderCompanionObject() }
-            .call { renderToString() }
-            .call { renderHashCode() }
-            .call { renderEquals() }
-            .call { renderCopy() }
-            .call { renderBuilder() }
-            .closeBlock("}")
-            .write("")
+        if (ctx.settings.codegen.dataClasses) {
+            writer.openBlock("data class #T(", symbol)
+            renderImmutableProperties()
+            writer.closeAndOpenBlock(") {")
+            renderToString()
+            writer.closeBlock("}")
+        } else {
+            writer.openBlock("class #T private constructor(builder: Builder) {", symbol)
+                .call { renderImmutableProperties() }
+                .write("")
+                .call { renderCompanionObject() }
+                .call { renderToString() }
+                .call { renderHashCode() }
+                .call { renderEquals() }
+                .call { renderCopy() }
+                .call { renderBuilder() }
+                .closeBlock("}")
+                .write("")
+        }
     }
 
     private fun renderImmutableProperties() {
-        // generate the immutable properties that are set from a builder
-        sortedMembers.forEach {
-            val (memberName, memberSymbol) = memberNameSymbolIndex[it]!!
-            writer.renderMemberDocumentation(model, it)
-            writer.renderAnnotations(it)
+        fun renderProperty(memberShape: MemberShape, includeDocs: Boolean, suffix: String) {
+            val (memberName, memberSymbol) = memberNameSymbolIndex[memberShape]!!
+            if (includeDocs) writer.renderMemberDocumentation(model, memberShape)
+            writer.renderAnnotations(memberShape)
             if (shape.isError && "message" == memberName) {
-                val targetShape = model.expectShape(it.target)
+                val targetShape = model.expectShape(memberShape.target)
                 if (!targetShape.isStringShape) {
                     throw CodegenException("Message is a reserved name for exception types and cannot be used for any other property")
                 }
                 // override Throwable's message property
-                writer.write("override val #1L: #2F = builder.#1L", memberName, memberSymbol)
+                writer.write("override val #1L: #2F$suffix", memberName, memberSymbol)
             } else {
-                writer.write("val #1L: #2F = builder.#1L", memberName, memberSymbol)
+                writer.write("val #1L: #2F$suffix", memberName, memberSymbol)
             }
+        }
+
+        // generate the immutable properties that are set from a builder
+        if (ctx.settings.codegen.dataClasses) {
+            nonNullMembers.forEach { renderProperty(it, false, ",") }
+            nullableMembers.forEach { renderProperty(it, false, " = null,") }
+        } else {
+            sortedMembers.forEach { renderProperty(it, true, " = builder.#1L") }
         }
     }
 
@@ -265,26 +290,43 @@ class StructureGenerator(
         val exceptionBaseClass = ExceptionBaseClassGenerator.baseExceptionSymbol(ctx.settings)
         writer.addImport(exceptionBaseClass)
 
-        writer.openBlock("class #T private constructor(builder: Builder) : ${exceptionBaseClass.name}() {", symbol)
-            .write("")
-            .call { renderImmutableProperties() }
-            .write("")
-            .withBlock("init {", "}") {
-                // initialize error metadata
-                if (isRetryable) {
-                    call { renderRetryable(isThrottling) }
+
+        if (ctx.settings.codegen.dataClasses) {
+            writer.openBlock("data class #T(", symbol)
+                .call { renderImmutableProperties() }
+                .closeAndOpenBlock(") : ${exceptionBaseClass.name}() {")
+                .withBlock("init {", "}") {
+                    // initialize error metadata
+                    if (isRetryable) {
+                        call { renderRetryable(isThrottling) }
+                    }
+                    call { renderErrorType(errorTrait) }
                 }
-                call { renderErrorType(errorTrait) }
-            }
-            .write("")
-            .call { renderCompanionObject() }
-            .call { renderToString() }
-            .call { renderHashCode() }
-            .call { renderEquals() }
-            .call { renderCopy() }
-            .call { renderBuilder() }
-            .closeBlock("}")
-            .write("")
+                .call { renderToString() }
+                .closeBlock("}")
+        } else {
+            writer.openBlock("class #T private constructor(builder: Builder) : ${exceptionBaseClass.name}() {", symbol)
+                .write("")
+                .call { renderImmutableProperties() }
+                .write("")
+                .withBlock("init {", "}") {
+                    // initialize error metadata
+                    if (isRetryable) {
+                        call { renderRetryable(isThrottling) }
+                    }
+                    call { renderErrorType(errorTrait) }
+                }
+                .write("")
+                .call { renderCompanionObject() }
+                .call { renderToString() }
+                .call { renderHashCode() }
+                .call { renderEquals() }
+                .call { renderCopy() }
+                .call { renderBuilder() }
+                .closeBlock("}")
+                .write("")
+        }
+
     }
 
     private fun renderRetryable(isThrottling: Boolean) {

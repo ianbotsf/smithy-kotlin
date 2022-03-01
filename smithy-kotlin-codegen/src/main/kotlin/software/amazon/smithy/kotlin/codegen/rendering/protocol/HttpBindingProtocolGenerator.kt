@@ -541,75 +541,163 @@ abstract class HttpBindingProtocolGenerator : ProtocolGenerator {
     ) {
         writer
             .addImport(RuntimeTypes.Core.ExecutionContext)
-            .openBlock(
+            .withBlock(
                 "override suspend fun deserialize(context: #T, response: #T): #T {",
+                "}",
                 RuntimeTypes.Core.ExecutionContext,
                 RuntimeTypes.Http.Response.HttpResponse,
                 outputSymbol
-            )
-            .call {
-                if (outputSymbol.shape?.isError == false && op != null) {
-                    // handle operation errors
-                    renderIsHttpError(ctx, op, writer)
-                }
-            }
-            .write("val builder = #T.Builder()", outputSymbol)
-            .write("")
-            .call {
-                // headers
-                val headerBindings = responseBindings
-                    .filter { it.location == HttpBinding.Location.HEADER }
-                    .sortedBy { it.memberName }
-
-                renderDeserializeHeaders(ctx, headerBindings, writer)
-
-                // prefix headers
-                // spec: "Only a single structure member can be bound to httpPrefixHeaders"
-                responseBindings.firstOrNull { it.location == HttpBinding.Location.PREFIX_HEADERS }
-                    ?.let {
-                        renderDeserializePrefixHeaders(ctx, it, writer)
+            ) {
+                writer.call {
+                    if (outputSymbol.shape?.isError == false && op != null) {
+                        // handle operation errors
+                        renderIsHttpError(ctx, op, writer)
                     }
-            }
-            .write("")
-            .call {
-                // document members
-                // payload member(s)
-                val httpPayload = responseBindings.firstOrNull { it.location == HttpBinding.Location.PAYLOAD }
-                if (httpPayload != null) {
-                    renderExplicitHttpPayloadDeserializer(ctx, httpPayload, writer)
-                } else {
-                    // Unbound document members that should be deserialized from the document format for the protocol.
-                    val documentMembers = responseBindings
+                }
+
+                if (ctx.settings.codegen.dataClasses) {
+                    // TODO Is this right?
+                    val memberShapes = responseBindings
                         .filter { it.location == HttpBinding.Location.DOCUMENT }
-                        .sortedBy { it.memberName }
                         .map { it.member }
 
-                    if (documentMembers.isNotEmpty()) {
-                        val sdg = structuredDataParser(ctx)
+                    val memberNameSymbolIndex = memberShapes.associateWith {
+                        ctx.symbolProvider.toMemberName(it) to ctx.symbolProvider.toSymbol(it)
+                    }
+                    val (nullableMembers, nonNullMembers) = memberShapes
+                        .partition { memberNameSymbolIndex[it]!!.second.isBoxed }
 
-                        val bodyDeserializerFn = if (op != null) {
-                            // normal operation
-                            sdg.operationDeserializer(ctx, op, documentMembers)
-                        } else {
-                            // error
-                            sdg.errorDeserializer(ctx, outputSymbol.shape as StructureShape, documentMembers)
+                    fun renderMemberVar(m: MemberShape) {
+                        val (name, memberSymbol) = memberNameSymbolIndex[m]!!
+                        // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
+                        writer.write("var #L: #E", name, memberSymbol)
+                    }
+
+                    fun renderMemberPassing(m: MemberShape, holder: String = "", rightSideAssertion: String = "", endOfLine: String = "") {
+                        val (name, _) = memberNameSymbolIndex[m]!!
+                        writer.write("#1L = $holder#1L$rightSideAssertion$endOfLine", name)
+                    }
+
+                    nonNullMembers.forEach(::renderMemberVar)
+                    nullableMembers.forEach(::renderMemberVar)
+
+                    // headers
+                    val headerBindings = responseBindings
+                        .filter { it.location == HttpBinding.Location.HEADER }
+                        .sortedBy { it.memberName }
+
+                    renderDeserializeHeaders(ctx, headerBindings, writer)
+
+                    // prefix headers
+                    // spec: "Only a single structure member can be bound to httpPrefixHeaders"
+                    responseBindings.firstOrNull { it.location == HttpBinding.Location.PREFIX_HEADERS }
+                        ?.let {
+                            renderDeserializePrefixHeaders(ctx, it, writer)
                         }
 
-                        writer.write("val payload = response.body.#T()", RuntimeTypes.Http.readAll)
-                            .withBlock("if (payload != null) {", "}") {
-                                write("#T(builder, payload)", bodyDeserializerFn)
+                    writer.write("")
+
+                    // document members
+                    // payload member(s)
+                    val httpPayload = responseBindings.firstOrNull { it.location == HttpBinding.Location.PAYLOAD }
+                    if (httpPayload != null) {
+                        renderExplicitHttpPayloadDeserializer(ctx, httpPayload, writer)
+                    } else {
+                        // Unbound document members that should be deserialized from the document format for the protocol.
+                        val documentMembers = responseBindings
+                            .filter { it.location == HttpBinding.Location.DOCUMENT }
+                            .sortedBy { it.memberName }
+                            .map { it.member }
+
+                        if (documentMembers.isNotEmpty()) {
+                            val sdg = structuredDataParser(ctx)
+
+                            val bodyDeserializerFn = if (op != null) {
+                                // normal operation
+                                sdg.operationDeserializer(ctx, op, documentMembers)
+                            } else {
+                                // error
+                                sdg.errorDeserializer(ctx, outputSymbol.shape as StructureShape, documentMembers)
                             }
+
+                            writer.write("val payload = response.body.#T()", RuntimeTypes.Http.readAll)
+                                .withBlock("if (payload != null) {", "}") {
+                                    write("val deserializeResult = #T(payload)", bodyDeserializerFn)
+                                    nonNullMembers.forEach { renderMemberPassing(it, holder = "deserializeResult.") }
+                                    nullableMembers.forEach { renderMemberPassing(it, holder = "deserializeResult.") }
+                                }
+                        }
                     }
+
+                    responseBindings.firstOrNull { it.location == HttpBinding.Location.RESPONSE_CODE }
+                        ?.let {
+                            renderDeserializeResponseCode(ctx, it, writer)
+                        }
+
+                    writer.withBlock("return #T(", ")", outputSymbol) {
+                        nonNullMembers.forEach { renderMemberPassing(it, rightSideAssertion = "!!", endOfLine = ",") }
+                        nullableMembers.forEach { renderMemberPassing(it, endOfLine = ",") }
+                    }
+                } else {
+                    writer
+                        .write("val builder = #T.Builder()", outputSymbol)
+                        .write("")
+                        .call {
+                            // headers
+                            val headerBindings = responseBindings
+                                .filter { it.location == HttpBinding.Location.HEADER }
+                                .sortedBy { it.memberName }
+
+                            renderDeserializeHeaders(ctx, headerBindings, writer)
+
+                            // prefix headers
+                            // spec: "Only a single structure member can be bound to httpPrefixHeaders"
+                            responseBindings.firstOrNull { it.location == HttpBinding.Location.PREFIX_HEADERS }
+                                ?.let {
+                                    renderDeserializePrefixHeaders(ctx, it, writer)
+                                }
+                        }
+                        .write("")
+                        .call {
+                            // document members
+                            // payload member(s)
+                            val httpPayload = responseBindings.firstOrNull { it.location == HttpBinding.Location.PAYLOAD }
+                            if (httpPayload != null) {
+                                renderExplicitHttpPayloadDeserializer(ctx, httpPayload, writer)
+                            } else {
+                                // Unbound document members that should be deserialized from the document format for the protocol.
+                                val documentMembers = responseBindings
+                                    .filter { it.location == HttpBinding.Location.DOCUMENT }
+                                    .sortedBy { it.memberName }
+                                    .map { it.member }
+
+                                if (documentMembers.isNotEmpty()) {
+                                    val sdg = structuredDataParser(ctx)
+
+                                    val bodyDeserializerFn = if (op != null) {
+                                        // normal operation
+                                        sdg.operationDeserializer(ctx, op, documentMembers)
+                                    } else {
+                                        // error
+                                        sdg.errorDeserializer(ctx, outputSymbol.shape as StructureShape, documentMembers)
+                                    }
+
+                                    writer.write("val payload = response.body.#T()", RuntimeTypes.Http.readAll)
+                                        .withBlock("if (payload != null) {", "}") {
+                                            write("#T(builder, payload)", bodyDeserializerFn)
+                                        }
+                                }
+                            }
+                        }
+                        .call {
+                            responseBindings.firstOrNull { it.location == HttpBinding.Location.RESPONSE_CODE }
+                                ?.let {
+                                    renderDeserializeResponseCode(ctx, it, writer)
+                                }
+                        }
+                        .write("return builder.build()")
                 }
             }
-            .call {
-                responseBindings.firstOrNull { it.location == HttpBinding.Location.RESPONSE_CODE }
-                    ?.let {
-                        renderDeserializeResponseCode(ctx, it, writer)
-                    }
-            }
-            .write("return builder.build()")
-            .closeBlock("}")
     }
 
     /**
