@@ -569,8 +569,8 @@ abstract class HttpBindingProtocolGenerator : ProtocolGenerator {
 
                     fun renderMemberVar(m: MemberShape) {
                         val (name, memberSymbol) = memberNameSymbolIndex[m]!!
-                        // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
-                        writer.write("var #L: #E", name, memberSymbol)
+                        // FIXME Using #E because #T doesn't properly include nullability for boxed symbols
+                        writer.write("var #L: #E", name, memberSymbol.boxed())
                     }
 
                     fun renderMemberPassing(m: MemberShape, holder: String = "", rightSideAssertion: String = "", endOfLine: String = "") {

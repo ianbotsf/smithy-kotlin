@@ -9,6 +9,7 @@ import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.kotlin.codegen.core.KotlinWriter
 import software.amazon.smithy.kotlin.codegen.core.RuntimeTypes
 import software.amazon.smithy.kotlin.codegen.core.withBlock
+import software.amazon.smithy.kotlin.codegen.model.boxed
 import software.amazon.smithy.kotlin.codegen.model.isBoxed
 import software.amazon.smithy.kotlin.codegen.model.knowledge.SerdeIndex
 import software.amazon.smithy.kotlin.codegen.rendering.protocol.ProtocolGenerator
@@ -42,8 +43,8 @@ open class JsonParserGenerator(
 
                     fun renderMemberVar(m: MemberShape) {
                         val (name, memberSymbol) = memberNameSymbolIndex[m]!!
-                        // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
-                        writer.write("var #L: #E", name, memberSymbol)
+                        // FIXME Using #E because #T doesn't properly include nullability for boxed symbols
+                        writer.write("var #L: #E", name, memberSymbol.boxed())
                     }
 
                     fun renderMemberPassing(m: MemberShape, rightSideAssertion: String = "") {
@@ -123,8 +124,9 @@ open class JsonParserGenerator(
 
                             fun renderMemberVar(m: MemberShape) {
                                 val (name, memberSymbol) = memberNameSymbolIndex[m]!!
-                                // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
-                                writer.write("var #L: #E", name, memberSymbol)
+                                // FIXME Using #E because #T doesn't properly include nullability for boxed symbols
+                                writer.rawString()
+                                writer.write("var #L: #E", name, memberSymbol.boxed())
                             }
 
                             fun renderMemberPassing(m: MemberShape, rightSideAssertion: String = "") {
@@ -169,8 +171,8 @@ open class JsonParserGenerator(
 
                     fun renderMemberVar(m: MemberShape) {
                         val (name, memberSymbol) = memberNameSymbolIndex[m]!!
-                        // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
-                        writer.write("var #L: #E", name, memberSymbol)
+                        // FIXME Using #E because #T doesn't properly include nullability for boxed symbols
+                        writer.write("var #L: #E", name, memberSymbol.boxed())
                     }
 
                     fun renderMemberPassing(m: MemberShape, rightSideAssertion: String = "") {

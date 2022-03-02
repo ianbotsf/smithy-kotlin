@@ -54,6 +54,8 @@ val Symbol.isBoxed: Boolean
 val Symbol.isNotBoxed: Boolean
     get() = !isBoxed
 
+fun Symbol.boxed(): Symbol = toBuilder().boxed().build()
+
 /**
  * Gets the default value for the symbol if present, else null
  * @param defaultBoxed the string to pass back for boxed values

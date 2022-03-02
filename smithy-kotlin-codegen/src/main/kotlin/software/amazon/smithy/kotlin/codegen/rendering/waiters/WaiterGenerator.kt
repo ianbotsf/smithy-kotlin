@@ -5,11 +5,10 @@
 
 package software.amazon.smithy.kotlin.codegen.rendering.waiters
 
-import software.amazon.smithy.kotlin.codegen.core.KotlinWriter
-import software.amazon.smithy.kotlin.codegen.core.RuntimeTypes
-import software.amazon.smithy.kotlin.codegen.core.addImport
-import software.amazon.smithy.kotlin.codegen.core.withBlock
+import software.amazon.smithy.kotlin.codegen.core.*
 import software.amazon.smithy.kotlin.codegen.lang.KotlinTypes
+import software.amazon.smithy.kotlin.codegen.model.isBoxed
+import software.amazon.smithy.model.shapes.MemberShape
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 
@@ -76,16 +75,51 @@ internal fun KotlinWriter.renderWaiter(wi: WaiterInfo) {
 
     write("")
     wi.waiter.documentation.ifPresent(this::dokka)
-    write(
-        "suspend fun #T.#L(block: #T.Builder.() -> Unit): Outcome<#T> =",
-        wi.serviceSymbol,
-        wi.methodName,
-        wi.inputSymbol,
-        wi.outputSymbol,
-    )
-    indent()
-    write("#L(#T.Builder().apply(block).build())", wi.methodName, wi.inputSymbol)
-    dedent()
+    if (wi.ctx.settings.codegen.dataClasses) {
+        // FIXME This is necessary because #F doesn't actually fully-qualify type parameters e.g.,
+        // Map<String, Condition> vs kotlin.collections.Map<kotlin.String, aws.sdk.kotlin.services.dynamodb.model.Condition>
+        addImport(wi.inputSymbol.namespace, "*")
+
+        val inputShape = wi.input
+        val memberShapes = inputShape.allMembers.values
+        val memberNameSymbolIndex = memberShapes.associateWith {
+            wi.ctx.symbolProvider.toMemberName(it) to wi.ctx.symbolProvider.toSymbol(it)
+        }
+        val (nullableMembers, nonNullMembers) = inputShape
+            .allMembers
+            .values
+            .partition { memberNameSymbolIndex[it]!!.second.isBoxed }
+
+        fun renderMember(m: MemberShape, defaultValueString: String = "") {
+            val (name, symbol) = memberNameSymbolIndex[m]!!
+            // FIXME Using #F because #T doesn't properly include nullability for boxed symbols
+            write("#L: #F$defaultValueString,", name, symbol)
+        }
+
+        fun renderMemberPassing(m: MemberShape) {
+            val (name, _) = memberNameSymbolIndex[m]!!
+            write("#1L = #1L,", name)
+        }
+
+        openBlock("suspend fun #T.#L(", wi.serviceSymbol, wi.methodName)
+        nonNullMembers.forEach { renderMember(it) }
+        nullableMembers.forEach { renderMember(it, " = null") }
+        closeAndOpenBlock(") = #L(#T(", wi.methodName, wi.inputSymbol)
+        nonNullMembers.forEach(::renderMemberPassing)
+        nullableMembers.forEach(::renderMemberPassing)
+        closeBlock("))")
+    } else {
+        write(
+            "suspend fun #T.#L(block: #T.Builder.() -> Unit): Outcome<#T> =",
+            wi.serviceSymbol,
+            wi.methodName,
+            wi.inputSymbol,
+            wi.outputSymbol,
+        )
+        indent()
+        write("#L(#T.Builder().apply(block).build())", wi.methodName, wi.inputSymbol)
+        dedent()
+    }
 }
 
 private val thousandsFormatter = DecimalFormat(",###", DecimalFormatSymbols().apply { groupingSeparator = '_' })
